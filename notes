@@ -1,0 +1,20 @@
+Newer versions of Kafka (2.8+ and especially 3.x) are moving away from ZooKeeper.
+
+Kafka now uses:
+
+KRaft (Kafka Raft)
+
+This means:
+
+No external ZooKeeper needed
+Kafka manages itself internally
+
+
+-------------------------------------------
+
+
+kafka reads from the api 
+
+job 1 recieves the data from kafka and saves it in cassandra 
+
+writes to redis the latest positions 

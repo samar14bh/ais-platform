@@ -1,0 +1,4 @@
+python-dotenv==1.0.1
+pymongo==4.10.1
+geohash2==1.1
+redis==5.2.1

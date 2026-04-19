@@ -1,0 +1,5 @@
+# Run the batch jobs every day around 2am
+0 2 * * * spark-submit /opt/spark-jobs/batch/batch_job_a_routes.py >> /var/log/batch_a.log 2>&1
+15 2 * * * spark-submit /opt/spark-jobs/batch/batch_job_b_zone_traffic.py >> /var/log/batch_b.log 2>&1
+30 2 * * * spark-submit /opt/spark-jobs/batch/batch_job_c_heatmap.py >> /var/log/batch_c.log 2>&1
+45 2 * * * spark-submit /opt/spark-jobs/batch/batch_job_d_vessel_profiles.py >> /var/log/batch_d.log 2>&1

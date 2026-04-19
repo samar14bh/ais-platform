@@ -1,0 +1,200 @@
+services:
+
+  # ── Kafka ──────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports:
+      - "9092:9092"
+      - "9094:9094"  # Add this for external access
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "kafka-topics --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # ── MinIO ─────────────────────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    volumes:
+      - minio_data:/data
+
+  # ── Redis ─────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+
+  # ── Cassandra ─────────────────────────
+  cassandra:
+    image: cassandra:4.1
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 30s
+      retries: 10
+
+  # ── MongoDB ───────────────────────────
+  mongodb:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes:
+      - mongo_data:/data/db
+
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    profiles:
+      - full
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./stream:/opt/spark-jobs/stream
+      - ./batch:/opt/spark-jobs/batch
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+
+  spark-worker:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    profiles:
+      - full
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    depends_on:
+      - spark-master
+    volumes:
+      - ./stream:/opt/spark-jobs/stream
+      - ./batch:/opt/spark-jobs/batch
+    environment:
+      - SPARK_NO_DAEMONIZE=true
+
+  stream-job1:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    profiles:
+      - full
+    depends_on:
+      spark-master:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./stream:/opt/spark-jobs/stream
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - CASSANDRA_HOST=cassandra
+      - REDIS_HOST=redis
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
+    command: >
+      bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
+      /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,com.datastax.spark:spark-cassandra-connector_2.12:3.5.0
+      /opt/spark-jobs/stream/job1_positions.py"
+    restart: unless-stopped
+
+  stream-job2:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    profiles:
+      - full
+    depends_on:
+      spark-master:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
+    volumes:
+      - ./stream:/opt/spark-jobs/stream
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
+    command: >
+      bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
+      /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
+      /opt/spark-jobs/stream/job2_zone_aggregation.py"
+    restart: unless-stopped
+
+  ingestion-producer:
+    build:
+      context: .
+      dockerfile: docker/ingestion/Dockerfile
+    profiles:
+      - full
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - AISSTREAM_API_KEY=${AISSTREAM_API_KEY}
+      - KAFKA_BROKER=kafka:9092
+      - AIS_FILTER_MESSAGE_TYPES=${AIS_FILTER_MESSAGE_TYPES:-PositionReport}
+      - AIS_BOUNDING_BOXES_JSON=${AIS_BOUNDING_BOXES_JSON:-[[[30.0,-6.0],[47.0,37.0]]]}
+    command: python -m ingestion.aisstream_producer
+    restart: unless-stopped
+  
+  # Add to your docker-compose.yml
+
+  spark-batch-scheduler:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    profiles:
+      - full
+    depends_on:
+      - spark-master
+      - cassandra
+      - mongodb
+    volumes:
+      - ./batch:/opt/spark-jobs/batch
+      - ./batch/crontab:/etc/cron.d/spark-batch
+    environment:
+      - CASSANDRA_HOST=cassandra
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
+    command: >
+      bash -c "chmod 0644 /etc/cron.d/spark-batch &&
+      crontab /etc/cron.d/spark-batch &&
+      cron -f"
+
+volumes:
+  minio_data:
+  cassandra_data:
+  mongo_data:
