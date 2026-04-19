@@ -1,0 +1,52 @@
+AIS Platform - Quick Start After Cloning
+
+1) Clone repository and enter project folder
+   git clone <YOUR_REPO_URL>
+   cd ais-platform
+
+2) Create environment file
+   PowerShell:
+   Copy-Item .env.example .env
+
+3) Edit .env and set required values
+   - AISSTREAM_API_KEY=<your key>
+   - MONGO_USER=admin
+   - MONGO_PASSWORD=<your password>
+   - MINIO_USER=admin
+   - MINIO_PASSWORD=<your password>
+
+4) Start core infrastructure
+   docker compose up -d kafka cassandra redis mongodb
+
+5) Wait for Cassandra to be ready, then load schema
+   PowerShell:
+   Get-Content .\config\cassandra_schema.cql | docker exec -i cassandra cqlsh
+
+6) Start full project services (Spark + ingestion + stream jobs)
+   docker compose --profile full up -d --build
+
+7) Check running containers
+   docker compose --profile full ps
+
+8) Watch logs (examples)
+   docker compose --profile full logs -f ingestion-producer
+   docker compose --profile full logs -f stream-job1
+   docker compose --profile full logs -f stream-job2
+
+9) Quick validation checks
+   - Kafka topic messages:
+     docker exec -it kafka bash -lc "kafka-topics --bootstrap-server kafka:9092 --list"
+   - Cassandra table exists:
+     docker exec -it cassandra cqlsh -e "USE ais; DESCRIBE TABLES;"
+   - Redis has vessel keys:
+     docker exec -it redis redis-cli KEYS "vessel:*"
+
+10) Stop services
+   docker compose --profile full down
+
+11) Stop and remove volumes (clean reset)
+   docker compose --profile full down -v
+
+Notes
+- If docker compose commands fail with API version errors, restart Docker Desktop and rerun.
+- If stream jobs start but no data appears, verify AISSTREAM_API_KEY and internet access.

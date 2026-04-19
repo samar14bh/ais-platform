@@ -60,3 +60,6 @@ tmp/
 checkpoints/
 spark-warehouse/
 metastore_db/
+
+# Local scratch notes
+notes
