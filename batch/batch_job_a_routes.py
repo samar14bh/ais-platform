@@ -22,6 +22,7 @@ Schema:
 """
 
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 
 import geohash2  
@@ -32,6 +33,10 @@ from pyspark.sql.functions import (
 )
 from pyspark.sql.types import StringType, DoubleType, StructType, StructField
 from pyspark.sql.window import Window
+
+# Ensure shared module can be imported
+if '/opt/spark-jobs' not in sys.path:
+    sys.path.insert(0, '/opt/spark-jobs')
 
 try:
     from batch.batch_utils import build_batch_spark_session, read_vessel_positions_for_date

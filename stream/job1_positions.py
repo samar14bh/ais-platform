@@ -28,6 +28,7 @@ MONGO_URI = env["mongo_uri"]
 REDIS_HOST   = os.getenv("REDIS_HOST", "redis")
 CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
 CASSANDRA_PORT = os.getenv("CASSANDRA_PORT", "9042")
+REDIS_ACTIVE_INDEX = "vessel:active"
 
 # ── Spark session ─────────────────────────────────
 spark = build_stream_spark_session(
@@ -69,8 +70,10 @@ def write_to_redis(batch_df, batch_id):
     if batch_df.isEmpty():
         return
     rows = batch_df.collect()
+    pipeline = redis_client.pipeline()
     for row in rows:
         key = f"vessel:{row.mmsi}"
+        updated_at = str(row.recorded_at)
         value = json.dumps({
             "mmsi":       row.mmsi,
             "ship_name":  row.ship_name,
@@ -80,10 +83,12 @@ def write_to_redis(batch_df, batch_id):
             "course":     row.course,
             "heading":    row.heading,
             "nav_status": row.nav_status,
-            "updated_at": str(row.recorded_at)
+            "updated_at": updated_at
         })
         # overwrite — Redis always holds latest position only
-        redis_client.set(key, value, ex=300)  # expires after 5 min if no update
+        pipeline.set(key, value, ex=300)  # expires after 5 min if no update
+        pipeline.zadd(REDIS_ACTIVE_INDEX, {key: row.recorded_at.timestamp()})
+    pipeline.execute()
     print(f"[Redis] Batch {batch_id}: updated {len(rows)} vessels")
 
 

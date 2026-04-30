@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+websockets
+redis
+pymongo
+cassandra-driver
+python-dotenv

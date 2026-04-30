@@ -41,7 +41,9 @@ Run manually:
 """
 
 import os
+import sys
 import math
+import time
 from datetime import datetime, timedelta, timezone
 
 import geohash2  # pip install geohash2
@@ -51,6 +53,10 @@ from pyspark.sql.functions import (
     col, udf, countDistinct, count
 )
 from pyspark.sql.types import StringType
+
+# Ensure shared module can be imported
+if '/opt/spark-jobs' not in sys.path:
+    sys.path.insert(0, '/opt/spark-jobs')
 
 try:
     from batch.batch_utils import build_batch_spark_session, read_vessel_positions_for_date
@@ -63,7 +69,9 @@ load_dotenv()
 CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
 MONGO_USER     = os.getenv("MONGO_USER", "admin")
 MONGO_PASS     = os.getenv("MONGO_PASSWORD")
-MONGO_URI      = f"mongodb://{MONGO_USER}:{MONGO_PASS}@mongodb:27017"
+MONGO_HOST     = os.getenv("MONGO_HOST", "mongodb")
+MONGO_PORT     = os.getenv("MONGO_PORT", "27017")
+MONGO_URI      = f"mongodb://{MONGO_USER}:{MONGO_PASS}@{MONGO_HOST}:{MONGO_PORT}/?authSource=admin"
 
 TARGET_DATE = os.getenv("BATCH_DATE", (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d"))
 
@@ -99,7 +107,24 @@ if total == 0:
 # Cache since we'll use it twice (precision 5 and 6)
 df.cache()
 
-mongo_client = MongoClient(MONGO_URI)
+mongo_client = None
+for attempt in range(1, 6):
+    try:
+        mongo_client = MongoClient(
+            MONGO_URI,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+            socketTimeoutMS=30000,
+            retryWrites=True,
+        )
+        mongo_client.admin.command("ping")
+        break
+    except Exception as error:
+        if attempt == 5:
+            raise
+        print(f"[Job C] Mongo connection attempt {attempt} failed: {error}. Retrying...")
+        time.sleep(3)
+
 db = mongo_client.ais_db
 
 # ── Process each precision level 

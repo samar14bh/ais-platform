@@ -1,5 +1,27 @@
 services:
 
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    profiles:
+      - full
+    depends_on:
+      - redis
+      - mongodb
+      - cassandra
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CASSANDRA_HOST=cassandra
+      - CASSANDRA_PORT=9042
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
+    volumes:
+      - ./backend:/app/backend
+
   # ── Kafka ──────────────────────────────
   kafka:
     image: confluentinc/cp-kafka:7.5.0
@@ -79,8 +101,12 @@ services:
     volumes:
       - ./stream:/opt/spark-jobs/stream
       - ./batch:/opt/spark-jobs/batch
+      - ./shared:/opt/spark-jobs/shared
     environment:
       - SPARK_NO_DAEMONIZE=true
+      - CASSANDRA_HOST=cassandra
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
 
   spark-worker:
     build:
@@ -94,8 +120,12 @@ services:
     volumes:
       - ./stream:/opt/spark-jobs/stream
       - ./batch:/opt/spark-jobs/batch
+      - ./shared:/opt/spark-jobs/shared
     environment:
       - SPARK_NO_DAEMONIZE=true
+      - CASSANDRA_HOST=cassandra
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
 
   stream-job1:
     build:
@@ -142,6 +172,7 @@ services:
         condition: service_started
     volumes:
       - ./stream:/opt/spark-jobs/stream
+      - ./shared:/opt/spark-jobs/shared
     environment:
       - KAFKA_BROKER=kafka:9092
       - MONGO_USER=${MONGO_USER}
