@@ -1,5 +1,56 @@
 # AIS Platform — Data Model
 
+## HDFS
+
+### `/ais/vessel_positions/` — Parquet archive
+
+Partitioned by `year=YYYY/month=MM/day=DD/hour=HH`. Written by stream job 4
+with a 60-second trigger; one Parquet file per partition per trigger.
+
+**Schema** (matches Cassandra `vessel_positions` plus partition columns):
+
+| Column | Type | Notes |
+|---|---|---|
+| `mmsi` | int | Vessel identifier |
+| `ship_name` | string | May be null |
+| `latitude` | double | |
+| `longitude` | double | |
+| `speed` | double | SOG in knots |
+| `course` | double | COG in degrees |
+| `heading` | int | True heading |
+| `nav_status` | int | ITU-R AIS status code |
+| `recorded_at` | timestamp | Vessel GPS time (UTC) |
+| `year` | int | Partition column |
+| `month` | int | Partition column |
+| `day` | int | Partition column |
+| `hour` | int | Partition column |
+
+**Compression:** Snappy (Parquet default — splittable, universally supported)
+
+**Reading a single day:**
+```python
+spark.read.parquet("hdfs://hdfs-namenode:8020/ais/vessel_positions") \
+    .filter("year=2026 AND month=4 AND day=28")
+```
+Spark applies partition pruning — only 24 `hour=` directories are read.
+
+### `/ais/checkpoints/` — Spark streaming checkpoints
+
+```
+/ais/checkpoints/
+    job1_redis/          # Kafka offsets + state for job 1 → Redis sink
+    job1_cassandra/      # Kafka offsets + state for job 1 → Cassandra sink
+    job2_zones/          # Kafka offsets + aggregation state for job 2
+    job3_anomalies/      # Kafka offsets for job 3
+    job4_hdfs_archive/   # Kafka offsets for job 4
+```
+
+Checkpoints survive container restarts. On restart, each Spark Streaming job
+reads its checkpoint to determine the last committed Kafka offset and resumes
+from there — no data loss, no replay from the beginning.
+
+---
+
 ## Cassandra
 
 ### `ais.vessel_positions`

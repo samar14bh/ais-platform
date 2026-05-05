@@ -25,6 +25,9 @@ except ModuleNotFoundError:
 env = load_stream_env(default_starting_offsets="latest")
 KAFKA_BROKER = env["kafka_broker"]
 MONGO_URI = env["mongo_uri"]
+HDFS_URI = env["hdfs_uri"]
+
+CHECKPOINT_JOB3 = f"{HDFS_URI}/ais/checkpoints/job3_anomalies"
 
 # ── Spark session ──────────────────────────────
 spark = build_stream_spark_session("AIS_Job3_Anomalies")
@@ -137,7 +140,7 @@ def detect_anomalies(batch_df, batch_id):
         
 query = parsed.writeStream \
     .foreachBatch(detect_anomalies) \
-    .option("checkpointLocation", "/tmp/checkpoints/job3_anomalies") \
+    .option("checkpointLocation", CHECKPOINT_JOB3) \
     .trigger(processingTime="10 seconds") \
     .start()
 

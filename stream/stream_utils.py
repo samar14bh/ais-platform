@@ -17,12 +17,20 @@ def load_stream_env(default_starting_offsets="latest"):
     mongo_user = os.getenv("MONGO_USER", "admin")
     mongo_pass = os.getenv("MONGO_PASSWORD")
     mongo_uri = f"mongodb://{mongo_user}:{mongo_pass}@mongodb:27017/?authSource=admin"
+    hdfs_uri = _hdfs_uri()
 
     return {
         "kafka_broker": kafka_broker,
         "kafka_starting_offsets": kafka_starting_offsets,
         "mongo_uri": mongo_uri,
+        "hdfs_uri": hdfs_uri,
     }
+
+
+def _hdfs_uri():
+    namenode = os.getenv("HDFS_NAMENODE", "hdfs-namenode")
+    port = os.getenv("HDFS_PORT", "8020")
+    return f"hdfs://{namenode}:{port}"
 
 
 def build_stream_spark_session(app_name, extra_packages=None, extra_configs=None):
@@ -30,9 +38,14 @@ def build_stream_spark_session(app_name, extra_packages=None, extra_configs=None
     if extra_packages:
         packages.extend(extra_packages)
 
+    # HDFS URI for default filesystem — tells Spark where to write checkpoints
+    # and resolve hdfs:// paths without requiring explicit URI in every call.
+    hdfs = _hdfs_uri()
+
     builder = SparkSession.builder \
         .appName(app_name) \
-        .config("spark.jars.packages", ",".join(packages))
+        .config("spark.jars.packages", ",".join(packages)) \
+        .config("spark.hadoop.fs.defaultFS", hdfs)
 
     if extra_configs:
         for key, value in extra_configs.items():

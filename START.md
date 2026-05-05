@@ -46,30 +46,58 @@ be left blank — all batch jobs default to processing yesterday's date.
 
 ### 1.2 — Start core infrastructure
 
-Start the databases and Kafka first, without Spark or ingestion. This lets you
-apply schemas before any application code runs.
+Start all infrastructure services first — databases, Kafka, and HDFS — without
+Spark or ingestion. This lets you apply schemas before any application code runs.
 
 ```powershell
-docker compose up -d kafka cassandra redis mongodb
+docker compose up -d kafka cassandra redis mongodb hdfs-namenode hdfs-datanode
 ```
 
-Check that all four are running:
+Check that all services are running:
 
 ```powershell
 docker compose ps
 ```
 
-Expected output: kafka, cassandra, redis, mongodb all showing `running` or
-`healthy`. Cassandra takes 60–90 seconds on first boot.
+Expected: kafka, cassandra, redis, mongodb, hdfs-namenode, hdfs-datanode all
+showing `running` or `healthy`.
 
-Wait until Cassandra is fully ready before continuing:
+Two services need extra time on first boot. Wait for both before continuing:
 
+**Cassandra** (60–90 seconds):
 ```powershell
 docker compose ps cassandra
 ```
+Wait until STATUS shows `healthy`.
 
-Keep running this until the `STATUS` column shows `healthy`. Do not proceed until
-it does — Cassandra's native transport isn't accepting connections until then.
+**HDFS NameNode** (20–30 seconds):
+```powershell
+docker compose ps hdfs-namenode
+```
+Wait until STATUS shows `healthy`. You can also open the NameNode Web UI at
+http://localhost:9870 — it is ready when you see the "Overview" page.
+
+Once both are healthy, create the required HDFS directories:
+
+```powershell
+docker compose exec hdfs-namenode hdfs dfs -mkdir -p /ais/vessel_positions
+docker compose exec hdfs-namenode hdfs dfs -mkdir -p /ais/checkpoints
+docker compose exec hdfs-namenode hdfs dfs -chmod 777 /ais
+docker compose exec hdfs-namenode hdfs dfs -chmod 777 /ais/vessel_positions
+docker compose exec hdfs-namenode hdfs dfs -chmod 777 /ais/checkpoints
+```
+
+Verify the directories were created:
+
+```powershell
+docker compose exec hdfs-namenode hdfs dfs -ls /ais
+```
+
+Expected:
+```
+drwxrwxrwx  - root supergroup   /ais/checkpoints
+drwxrwxrwx  - root supergroup   /ais/vessel_positions
+```
 
 ---
 
@@ -158,6 +186,7 @@ This builds and starts:
 | `stream-job1` | Spark streaming: Kafka → Redis + Cassandra |
 | `stream-job2` | Spark streaming: Kafka → MongoDB zone stats |
 | `stream-job3` | Spark streaming: Kafka → MongoDB anomaly alerts |
+| `stream-job4` | Spark streaming: Kafka → HDFS Parquet archive (60 s trigger) |
 | `ingestion-producer` | AISStream WebSocket → Kafka |
 | `spark-batch-scheduler` | Cron scheduler for nightly batch jobs |
 
@@ -278,6 +307,37 @@ Expected: documents with `type: "vessel_stopped_at_sea"` or `type: "abnormal_spe
 `severity`, `mmsi`, `ship_name`, `latitude`, `longitude`. May be empty for the
 first few minutes while the stream processes its initial batches. The
 `vessel_stopped_at_sea` type is the most common and does not require vessel profiles.
+
+---
+
+### 3.5b — Stream job 4: HDFS is receiving archived data
+
+After stream job 4 has run for at least 60 seconds (its trigger interval):
+
+```powershell
+docker compose exec hdfs-namenode hdfs dfs -ls /ais/vessel_positions
+```
+
+Expected: one or more `year=` directories:
+```
+drwxr-xr-x  - root supergroup  /ais/vessel_positions/year=2026
+```
+
+Drill down to verify Parquet files exist:
+```powershell
+docker compose exec hdfs-namenode hdfs dfs -ls -R /ais/vessel_positions
+```
+
+Check that stream checkpoints are also on HDFS:
+```powershell
+docker compose exec hdfs-namenode hdfs dfs -ls /ais/checkpoints
+```
+
+Expected: a directory per stream job (`job1_redis`, `job1_cassandra`,
+`job2_zones`, `job3_anomalies`, `job4_hdfs_archive`).
+
+Open the NameNode Web UI at http://localhost:9870 → "Utilities" → "Browse the
+file system" to explore `/ais` visually.
 
 ---
 
@@ -562,6 +622,8 @@ It should print `Uvicorn running on http://0.0.0.0:8000`.
 | Cassandra | localhost:9042 | Trajectory time-series |
 | MongoDB | localhost:27017 | Analytics and alerts |
 | Kafka external | localhost:9094 | Consume topics from host machine |
+| HDFS NameNode UI | http://localhost:9870 | Browse HDFS filesystem, monitor DataNodes |
+| HDFS NameNode RPC | localhost:8020 | Spark / Hadoop client connection point |
 
 ---
 
@@ -588,10 +650,15 @@ CSV load) before the system has any data again.
 # 1. Create env file and fill in credentials
 Copy-Item .env.example .env
 
-# 2. Start databases
-docker compose up -d kafka cassandra redis mongodb
+# 2. Start infrastructure (databases + Kafka + HDFS)
+docker compose up -d kafka cassandra redis mongodb hdfs-namenode hdfs-datanode
 
-# 3. Wait for Cassandra to be healthy, then apply schema
+# 2b. Wait for Cassandra and HDFS NameNode to be healthy, then create HDFS dirs
+docker compose exec hdfs-namenode hdfs dfs -mkdir -p /ais/vessel_positions
+docker compose exec hdfs-namenode hdfs dfs -mkdir -p /ais/checkpoints
+docker compose exec hdfs-namenode hdfs dfs -chmod 777 /ais /ais/vessel_positions /ais/checkpoints
+
+# 3. Apply Cassandra schema
 $id = (docker compose ps -q cassandra).Trim()
 docker cp config\cassandra_schema.cql ${id}:/tmp/schema.cql
 docker compose exec cassandra cqlsh -f /tmp/schema.cql

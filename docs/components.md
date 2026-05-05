@@ -68,14 +68,46 @@ in-memory TTL cache (`cachetools.TTLCache`). Alert deduplication uses a stable
 
 ---
 
+### `stream/job4_hdfs_archive.py`
+
+Archives every parsed AIS position to HDFS as Parquet. This is the permanent
+record — no TTL, no expiry. All other sinks (Redis, Cassandra, MongoDB) have
+bounded retention; HDFS is the only one that keeps everything forever.
+
+Reads the full parsed fields (not just the raw JSON string) so the Parquet files
+are columnar and immediately queryable by Spark without a JSON parsing step.
+
+Partition scheme: `year=/month=/day=/hour=` (Hive-compatible). A one-day query
+scans only 24 hour directories, not the full dataset.
+
+Uses a **60-second trigger** rather than the 10-second trigger used by jobs 1–3.
+Archival is latency-insensitive; larger batches produce fewer, bigger Parquet files
+which reduces NameNode metadata pressure and improves read performance.
+
+Checkpoint stored on HDFS (`/ais/checkpoints/job4_hdfs_archive`) so Spark
+resumes from the last committed Kafka offset after a container restart.
+
+**Output path:** `hdfs://hdfs-namenode:8020/ais/vessel_positions/year=.../month=.../day=.../hour=.../`
+
+**Env vars:** `KAFKA_BROKER`, `HDFS_NAMENODE`, `HDFS_PORT`
+
+---
+
 ## Batch jobs
 
-All jobs read from Cassandra `ais.vessel_positions` filtered to a single
-`BATCH_DATE` (defaults to yesterday). The shared SparkSession builder and
-Cassandra reader are in `batch/batch_utils.py`.
+All jobs read vessel positions filtered to a single `BATCH_DATE` (defaults to
+yesterday). The shared SparkSession builder and data readers are in
+`batch/batch_utils.py`, which exposes three read functions:
 
-Filter is applied on the `date` partition key column directly — the Cassandra
-connector pushes this to the storage layer so only the relevant partitions are read.
+| Function | Source | When to use |
+|---|---|---|
+| `read_vessel_positions_for_date()` | Cassandra | Data within the 30-day TTL window |
+| `read_vessel_positions_from_hdfs()` | HDFS Parquet | Data older than 30 days |
+| `read_vessel_positions_auto()` | Either | Automatically chooses based on date |
+
+All three return identically shaped DataFrames so batch job code needs no
+conditional logic. The Cassandra path uses partition key pushdown; the HDFS
+path uses Parquet partition pruning. Both avoid full scans.
 
 ### `batch/batch_job_d_vessel_profiles.py`
 
@@ -182,6 +214,40 @@ TypeScript interfaces matching the backend JSON shapes: `ShipData`, `Alert`,
 Single function `get_zone(lat, lon) -> str` that maps a coordinate to one of the
 eight Mediterranean zone names. Used by stream job 2 (as a Python UDF registered
 in Spark) and batch job B.
+
+---
+
+## HDFS
+
+### `config/hadoop.env`
+
+Environment variable file consumed by the `hdfs-namenode` and `hdfs-datanode`
+Docker containers (via `env_file`). Uses the `apache/hadoop:3.3.6` image's
+convention of `CORE-SITE.XML_` and `HDFS-SITE.XML_` prefixed env vars, which
+the image's entrypoint converts into the corresponding XML configuration files
+at startup.
+
+Key settings:
+- `fs.defaultFS = hdfs://hdfs-namenode:8020` — all Hadoop and Spark clients
+  resolve `hdfs://` URIs to this address
+- `dfs.replication = 1` — single DataNode; no replication overhead in dev
+- `dfs.namenode.safemode.threshold-pct = 0` — exits safe mode immediately on
+  startup instead of waiting for replication targets to be met
+
+### `docker/spark/entrypoint.sh`
+
+Shell script set as the Docker `ENTRYPOINT` for the Spark image. At container
+startup it reads `HDFS_NAMENODE` and `HDFS_PORT` from the environment and
+writes `$SPARK_HOME/conf/core-site.xml` so the Hadoop client embedded in Spark
+knows where the NameNode is. Then it hands off to the command from
+`docker-compose.yml` (`exec "$@"`).
+
+This approach is used instead of baking a static hostname into the image so the
+Spark containers work regardless of what the NameNode is called.
+
+Also includes `dfs.client.use.datanode.hostname=true` which is required when
+HDFS DataNodes are accessed by hostname from outside their container network
+(Docker bridge network name resolution).
 
 ---
 

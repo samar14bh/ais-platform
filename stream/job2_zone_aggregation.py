@@ -30,7 +30,10 @@ except ModuleNotFoundError:
 env = load_stream_env(default_starting_offsets="latest")
 KAFKA_BROKER = env["kafka_broker"]
 MONGO_URI = env["mongo_uri"]
+HDFS_URI = env["hdfs_uri"]
 mongo_client = MongoClient(MONGO_URI)
+
+CHECKPOINT_JOB2 = f"{HDFS_URI}/ais/checkpoints/job2_zones"
 
 get_zone_udf = udf(get_zone, StringType())
 
@@ -96,7 +99,7 @@ def write_to_mongodb(batch_df, batch_id):
 query = zone_stats.writeStream \
     .foreachBatch(write_to_mongodb) \
     .outputMode("complete") \
-    .option("checkpointLocation", "/tmp/checkpoints/job2_zones") \
+    .option("checkpointLocation", CHECKPOINT_JOB2) \
     .trigger(processingTime="10 seconds") \
     .start()
 

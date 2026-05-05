@@ -24,10 +24,16 @@ except ModuleNotFoundError:
 env = load_stream_env(default_starting_offsets="earliest")
 KAFKA_BROKER = env["kafka_broker"]
 KAFKA_STARTING_OFFSETS = env["kafka_starting_offsets"]
+HDFS_URI = env["hdfs_uri"]
 REDIS_HOST   = os.getenv("REDIS_HOST", "redis")
 CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
 CASSANDRA_PORT = os.getenv("CASSANDRA_PORT", "9042")
 REDIS_ACTIVE_INDEX = "vessel:active"
+
+# Checkpoints on HDFS survive container restarts and allow Spark to resume
+# from the last committed Kafka offset rather than replaying from the start.
+CHECKPOINT_REDIS     = f"{HDFS_URI}/ais/checkpoints/job1_redis"
+CHECKPOINT_CASSANDRA = f"{HDFS_URI}/ais/checkpoints/job1_cassandra"
 
 # ── Spark session ─────────────────────────────────
 spark = build_stream_spark_session(
@@ -120,13 +126,13 @@ def write_to_cassandra(batch_df, batch_id):
 # ── Start both streams ────────────────────────────
 q1 = parsed.writeStream \
     .foreachBatch(write_to_redis) \
-    .option("checkpointLocation", "/tmp/checkpoints/redis_v2") \
+    .option("checkpointLocation", CHECKPOINT_REDIS) \
     .trigger(processingTime="10 seconds") \
     .start()
 
 q2 = parsed.writeStream \
     .foreachBatch(write_to_cassandra) \
-    .option("checkpointLocation", "/tmp/checkpoints/cassandra_v2") \
+    .option("checkpointLocation", CHECKPOINT_CASSANDRA) \
     .trigger(processingTime="10 seconds") \
     .start()
 

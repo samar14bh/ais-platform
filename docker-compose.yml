@@ -45,6 +45,41 @@ services:
       timeout: 5s
       retries: 12
 
+  # ── HDFS ──────────────────────────────
+  hdfs-namenode:
+    image: apache/hadoop:3.3.6
+    hostname: hdfs-namenode
+    command: ["hdfs", "namenode"]
+    ports:
+      - "9870:9870"   # NameNode Web UI
+      - "8020:8020"   # NameNode RPC (Spark connects here)
+    environment:
+      HADOOP_HOME: /opt/hadoop
+      CLUSTER_NAME: ais-hdfs
+    env_file:
+      - ./config/hadoop.env
+    volumes:
+      - hdfs_namenode:/hadoop/dfs/name
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870/"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  hdfs-datanode:
+    image: apache/hadoop:3.3.6
+    command: ["hdfs", "datanode"]
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
+    environment:
+      HADOOP_HOME: /opt/hadoop
+    env_file:
+      - ./config/hadoop.env
+    volumes:
+      - hdfs_datanode:/hadoop/dfs/data
+
   # ── Redis ─────────────────────────────
   redis:
     image: redis:7-alpine
@@ -87,6 +122,9 @@ services:
     ports:
       - "8080:8080"
       - "7077:7077"
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
     volumes:
       - ./stream:/opt/spark-jobs/stream
       - ./batch:/opt/spark-jobs/batch
@@ -96,6 +134,8 @@ services:
       - CASSANDRA_HOST=cassandra
       - MONGO_USER=${MONGO_USER}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
+      - HDFS_NAMENODE=hdfs-namenode
+      - HDFS_PORT=8020
 
   spark-worker:
     build:
@@ -115,6 +155,8 @@ services:
       - CASSANDRA_HOST=cassandra
       - MONGO_USER=${MONGO_USER}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
+      - HDFS_NAMENODE=hdfs-namenode
+      - HDFS_PORT=8020
 
   stream-job1:
     build:
@@ -131,6 +173,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      hdfs-namenode:
+        condition: service_healthy
     volumes:
       - ./stream:/opt/spark-jobs/stream
     environment:
@@ -139,6 +183,8 @@ services:
       - REDIS_HOST=redis
       - MONGO_USER=${MONGO_USER}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
+      - HDFS_NAMENODE=hdfs-namenode
+      - HDFS_PORT=8020
     command: >
       bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
       /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
@@ -159,6 +205,8 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_started
+      hdfs-namenode:
+        condition: service_healthy
     volumes:
       - ./stream:/opt/spark-jobs/stream
       - ./shared:/opt/spark-jobs/shared
@@ -166,6 +214,8 @@ services:
       - KAFKA_BROKER=kafka:9092
       - MONGO_USER=${MONGO_USER}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
+      - HDFS_NAMENODE=hdfs-namenode
+      - HDFS_PORT=8020
     command: >
       bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
       /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
@@ -186,6 +236,8 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_started
+      hdfs-namenode:
+        condition: service_healthy
     volumes:
       - ./stream:/opt/spark-jobs/stream
       - ./shared:/opt/spark-jobs/shared
@@ -193,11 +245,39 @@ services:
       - KAFKA_BROKER=kafka:9092
       - MONGO_USER=${MONGO_USER}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
+      - HDFS_NAMENODE=hdfs-namenode
+      - HDFS_PORT=8020
     command: >
       bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
       /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
       /opt/spark-jobs/stream/job3_anomalie_detection.py"
+    restart: unless-stopped
+
+  stream-job4:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    profiles:
+      - full
+    depends_on:
+      spark-master:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      hdfs-namenode:
+        condition: service_healthy
+    volumes:
+      - ./stream:/opt/spark-jobs/stream
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - HDFS_NAMENODE=hdfs-namenode
+      - HDFS_PORT=8020
+    command: >
+      bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
+      /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
+      /opt/spark-jobs/stream/job4_hdfs_archive.py"
     restart: unless-stopped
 
   ingestion-producer:
@@ -227,6 +307,7 @@ services:
       - spark-master
       - cassandra
       - mongodb
+      - hdfs-namenode
     volumes:
       - ./batch:/opt/spark-jobs/batch
       - ./shared:/opt/spark-jobs/shared
@@ -235,6 +316,8 @@ services:
       - CASSANDRA_HOST=cassandra
       - MONGO_USER=${MONGO_USER}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
+      - HDFS_NAMENODE=hdfs-namenode
+      - HDFS_PORT=8020
     command: >
       bash -c "chmod 0644 /etc/cron.d/spark-batch &&
       crontab /etc/cron.d/spark-batch &&
@@ -243,3 +326,5 @@ services:
 volumes:
   cassandra_data:
   mongo_data:
+  hdfs_namenode:
+  hdfs_datanode:

@@ -5,11 +5,16 @@
 OceanWatch is an end-to-end maritime analytics platform. It ingests live vessel
 position messages from the [AISStream](https://aisstream.io) WebSocket service,
 processes them through two parallel pipelines (real-time streaming and nightly
-batch analytics), stores results in three purpose-specific databases, and serves
+batch analytics), stores results in four purpose-specific databases, and serves
 them to an interactive React dashboard.
 
 The geographic scope is the Mediterranean Sea and connecting waters
 (`[[30.0, -6.0], [47.0, 37.0]]`).
+
+The platform follows the **Lambda architecture** pattern:
+- **Speed layer** — Spark Structured Streaming jobs write to Redis, Cassandra, and MongoDB (low-latency, bounded retention)
+- **Batch layer** — nightly Spark jobs read from Cassandra (≤30 days) or HDFS (all history) and write pre-aggregated analytics to MongoDB
+- **Serving layer** — FastAPI reads from all three databases to serve the React dashboard
 
 ---
 
@@ -24,23 +29,26 @@ AISStream (external WebSocket)
         ▼
   Kafka  ais.raw.positions  (7-day retention)
         │
-   ┌────┴──────────────────────────────────┐
-   │  Real-time path (Spark Streaming)     │
-   │                                       │
-   │  stream/job1_positions.py             │──▶ Redis  (live cache, 5 min TTL)
-   │                                       │──▶ Cassandra  vessel_positions (30-day TTL)
-   │  stream/job2_zone_aggregation.py      │──▶ MongoDB  zone_stats
-   │  stream/job3_anomalie_detection.py    │──▶ MongoDB  alerts
-   └───────────────────────────────────────┘
+   ┌────┴──────────────────────────────────────────────────┐
+   │  Speed layer — Spark Structured Streaming              │
+   │                                                        │
+   │  stream/job1_positions.py   ──▶ Redis  (5 min TTL)     │
+   │                             ──▶ Cassandra  (30-day TTL)│
+   │  stream/job2_zone_aggregation.py ──▶ MongoDB zone_stats│
+   │  stream/job3_anomalie_detection.py ──▶ MongoDB alerts  │
+   │  stream/job4_hdfs_archive.py ──▶ HDFS  (permanent)     │
+   └────────────────────────────────────────────────────────┘
         │
-   ┌────┴──────────────────────────────────┐
-   │  Batch path (nightly, 02:00 cron)     │
-   │                                       │
-   │  batch/batch_job_d_vessel_profiles.py │──▶ MongoDB  vessel_profiles
-   │  batch/batch_job_a_routes.py          │──▶ MongoDB  route_segments
-   │  batch/batch_job_b_zone_traffic.py    │──▶ MongoDB  zone_traffic_hourly/daily
-   │  batch/batch_job_c_heatmap.py         │──▶ MongoDB  heatmap_tiles_p5/p6
-   └───────────────────────────────────────┘
+   ┌────┴──────────────────────────────────────────────────┐
+   │  Batch layer — nightly Spark jobs (02:00 cron)        │
+   │                                                        │
+   │  Source: Cassandra (≤30 days) or HDFS (>30 days)      │
+   │                                                        │
+   │  batch_job_d_vessel_profiles.py ──▶ MongoDB profiles  │
+   │  batch_job_a_routes.py          ──▶ MongoDB routes    │
+   │  batch_job_b_zone_traffic.py    ──▶ MongoDB traffic   │
+   │  batch_job_c_heatmap.py         ──▶ MongoDB heatmap   │
+   └────────────────────────────────────────────────────────┘
         │
    backend/main.py  (FastAPI, port 8000)
         │  REST + WebSocket
@@ -55,9 +63,10 @@ AISStream (external WebSocket)
 | Layer | Choice | Why |
 |---|---|---|
 | **Message transport** | Apache Kafka 7.5 | Durable, replayable buffer between ingestion and processing. Decouples producer speed from consumer speed. TTL-based auto-cleanup. |
-| **Stream processing** | Spark Structured Streaming 3.5 | Micro-batch (10 s trigger) with exactly-once semantics via checkpointing. Native Cassandra connector pushes partition filters down to the storage layer. |
-| **Batch processing** | PySpark (same cluster) | Reuses the Spark infrastructure; partition-pruned reads from Cassandra avoid full table scans. |
-| **Time-series storage** | Apache Cassandra 4.1 | Write-optimised, partition-key model maps exactly to the `(mmsi, date)` query pattern. Built-in TTL eliminates manual data expiry. |
+| **Stream processing** | Spark Structured Streaming 3.5 | Micro-batch (10 s trigger) with exactly-once semantics via checkpointing on HDFS. Native Cassandra connector pushes partition filters to the storage layer. |
+| **Batch processing** | PySpark (same cluster) | Reuses the Spark infrastructure; reads from Cassandra (hot, ≤30 days) or HDFS (cold, >30 days) via `batch_utils.read_vessel_positions_auto()`. |
+| **Permanent archive** | HDFS 3.3 (NameNode + DataNode) | Stores every AIS message forever as Parquet, partitioned by year/month/day/hour. Spark reads with partition pruning — no full scans. Also hosts all streaming job checkpoints so they survive container restarts. |
+| **Time-series storage** | Apache Cassandra 4.1 | Write-optimised, partition-key model maps exactly to the `(mmsi, date)` query pattern. Built-in TTL eliminates manual data expiry. 30-day hot window. |
 | **Analytics storage** | MongoDB 7 | Schema-flexible for heterogeneous analytics documents. Fast point reads on indexed fields. Upsert semantics simplify idempotent batch writes. |
 | **Live cache** | Redis 7 | Sub-millisecond key lookup. Sorted sets give O(log n) active-vessel discovery. TTL auto-expires stale vessels. |
 | **API layer** | FastAPI + Uvicorn | Async, minimal overhead. WebSocket support built-in. Auto-generated OpenAPI docs. |
@@ -67,6 +76,45 @@ AISStream (external WebSocket)
 ---
 
 ## Databases
+
+### HDFS — permanent archive
+
+HDFS stores structured Parquet files written by stream job 4. It is the only
+storage layer with no expiry — every AIS message is kept indefinitely.
+
+**Layout:**
+```
+hdfs://hdfs-namenode:8020/ais/
+    vessel_positions/
+        year=2026/month=04/day=28/hour=13/part-00000.snappy.parquet
+        year=2026/month=04/day=28/hour=14/part-00000.snappy.parquet
+        ...
+    checkpoints/
+        job1_redis/
+        job1_cassandra/
+        job2_zones/
+        job3_anomalies/
+        job4_hdfs_archive/
+```
+
+**Parquet schema** (same columns as Cassandra `vessel_positions`):
+`mmsi`, `ship_name`, `latitude`, `longitude`, `speed`, `course`, `heading`,
+`nav_status`, `recorded_at`, `year`, `month`, `day`, `hour`
+
+The partition columns (`year`, `month`, `day`, `hour`) are materialised as
+Hive-compatible directory names so Spark can apply predicate pushdown without
+reading all files. A query for `date = '2026-04-28'` reads only 24 directories.
+
+**When batch jobs use HDFS vs Cassandra:**
+
+`batch_utils.read_vessel_positions_auto()` compares the target date against the
+Cassandra 30-day TTL and automatically routes:
+- `target_date >= today − 30 days` → Cassandra (hot, fast partition read)
+- `target_date < today − 30 days` → HDFS (cold, Parquet partition read)
+
+Both paths return identically shaped DataFrames; batch job code is unchanged.
+
+---
 
 ### Cassandra — `ais` keyspace
 
@@ -167,13 +215,16 @@ Infrastructure only — use this when loading seed data or running batch jobs ma
 docker compose --profile full up -d --build
 ```
 Full stack: adds `backend`, `spark-master`, `spark-worker`, `stream-job1`,
-`stream-job2`, `stream-job3`, `ingestion-producer`, `spark-batch-scheduler`.
+`stream-job2`, `stream-job3`, `stream-job4`, `ingestion-producer`, `spark-batch-scheduler`.
+
+Infrastructure services (`kafka`, `cassandra`, `redis`, `mongodb`,
+`hdfs-namenode`, `hdfs-datanode`) start unconditionally.
 
 ---
 
 ## Known limitations
 
-- **MinIO / object storage** — not included in the current stack. Will be added when HDFS integration is introduced.
+- **Single-node HDFS** — one NameNode, one DataNode. Not HA. For production, use HA NameNode with at least 3 DataNodes and replication factor 3.
 - **Single-node Cassandra and MongoDB** — no replication, not production-safe.
 - **Alert resolution** is manual (direct MongoDB update). No API endpoint to mark
   alerts resolved.
