@@ -1,11 +1,15 @@
 export interface ShipData {
   id: string;
+  mmsi: string;
+  ship_name?: string;
   lat: number;
   lon: number;
-  type: string;
   speed: number;
-  status: string;
+  course?: number;
   heading?: number;
+  nav_status?: number;
+  status: string;
+  updated_at?: string;
 }
 
 export interface WebSocketMessage {
