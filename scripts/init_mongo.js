@@ -1,6 +1,6 @@
-// idempotent MongoDB initialization for ais_analytics
+// idempotent MongoDB initialization for ais_db
 (function(){
-  const d = db.getSiblingDB('ais_analytics');
+  const d = db.getSiblingDB('ais_db');
 
   function ensureCollection(name) {
     if (!d.getCollectionNames().includes(name)) {
