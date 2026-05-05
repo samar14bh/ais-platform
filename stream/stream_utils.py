@@ -16,7 +16,7 @@ def load_stream_env(default_starting_offsets="latest"):
     kafka_starting_offsets = os.getenv("KAFKA_STARTING_OFFSETS", default_starting_offsets)
     mongo_user = os.getenv("MONGO_USER", "admin")
     mongo_pass = os.getenv("MONGO_PASSWORD")
-    mongo_uri = f"mongodb://{mongo_user}:{mongo_pass}@mongodb:27017"
+    mongo_uri = f"mongodb://{mongo_user}:{mongo_pass}@mongodb:27017/?authSource=admin"
 
     return {
         "kafka_broker": kafka_broker,

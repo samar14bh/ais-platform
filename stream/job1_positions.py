@@ -1,7 +1,7 @@
 import os
 import traceback
 from pyspark.sql.functions import (
-    col, current_timestamp, to_date
+    col, to_timestamp, coalesce, current_timestamp, to_date
 )
 import redis
 import json
@@ -24,7 +24,6 @@ except ModuleNotFoundError:
 env = load_stream_env(default_starting_offsets="earliest")
 KAFKA_BROKER = env["kafka_broker"]
 KAFKA_STARTING_OFFSETS = env["kafka_starting_offsets"]
-MONGO_URI = env["mongo_uri"]
 REDIS_HOST   = os.getenv("REDIS_HOST", "redis")
 CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
 CASSANDRA_PORT = os.getenv("CASSANDRA_PORT", "9042")
@@ -36,7 +35,6 @@ spark = build_stream_spark_session(
     extra_packages=["com.datastax.spark:spark-cassandra-connector_2.12:3.5.0"],
     extra_configs={
         "spark.cassandra.connection.host": CASSANDRA_HOST,
-        "spark.mongodb.write.connection.uri": MONGO_URI,
     },
 )
 
@@ -60,7 +58,13 @@ parsed = parse_ais_payload(raw).select(
     col("d.Message.PositionReport.Cog").alias("course"),
     col("d.Message.PositionReport.TrueHeading").alias("heading"),
     col("d.Message.PositionReport.NavigationalStatus").alias("nav_status"),
-    current_timestamp().alias("recorded_at")
+    # Prefer the vessel's own GPS timestamp so Cassandra writes land in the
+    # correct (mmsi, date) partition and replays are idempotent.
+    # Fall back to processing time only when time_utc is absent.
+    coalesce(
+        to_timestamp(col("d.MetaData.time_utc")),
+        current_timestamp(),
+    ).alias("recorded_at"),
 ).filter(col("mmsi").isNotNull())
 
 # ── Sink 1: Redis (latest position per vessel) ────
