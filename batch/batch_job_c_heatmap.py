@@ -92,7 +92,6 @@ spark.sparkContext.setLogLevel("WARN")
 df = read_vessel_positions_for_date(
     spark,
     TARGET_DATE,
-    enforce_global_bounds=True,
     select_columns=["mmsi", "latitude", "longitude"],
 )
 

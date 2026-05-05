@@ -48,12 +48,12 @@ from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
-from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, to_date, date_trunc, udf, lit,
-    countDistinct, avg, max as spark_max, count, hour
+    avg, col, count, countDistinct, date_trunc, hour,
+    max as spark_max, rank, to_date, udf,
 )
 from pyspark.sql.types import StringType
+from pyspark.sql.window import Window
 
 try:
     from batch.batch_utils import build_batch_spark_session, read_vessel_positions_for_date
@@ -63,23 +63,8 @@ except ModuleNotFoundError:
 try:
     from shared.zones import get_zone
 except ModuleNotFoundError:
-    def get_zone(lat, lon):
-        if lat is None or lon is None:
-            return "unknown"
-
-        if 35.0 <= lat <= 42.0 and -6.0 <= lon <= 0:
-            return "gibraltar"
-        if 36.0 <= lat <= 40.0 and 0 <= lon <= 5.0:
-            return "alboran"
-        if 37.0 <= lat <= 41.0 and 5.0 <= lon <= 12.0:
-            return "balearic"
-        if 36.0 <= lat <= 42.0 and 12.0 <= lon <= 20.0:
-            return "central"
-        if 35.0 <= lat <= 40.0 and 20.0 <= lon <= 27.0:
-            return "eastern"
-        if 30.0 <= lat <= 36.0 and 30.0 <= lon <= 37.0:
-            return "levant"
-        return "other"
+    sys.path.insert(0, "/opt/spark-jobs")
+    from shared.zones import get_zone
 
 load_dotenv()
 
@@ -87,7 +72,7 @@ load_dotenv()
 CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "cassandra")
 MONGO_USER     = os.getenv("MONGO_USER", "admin")
 MONGO_PASS     = os.getenv("MONGO_PASSWORD")
-MONGO_URI      = f"mongodb://{MONGO_USER}:{MONGO_PASS}@mongodb:27017"
+MONGO_URI      = f"mongodb://{MONGO_USER}:{MONGO_PASS}@mongodb:27017/?authSource=admin"
 
 TARGET_DATE = os.getenv("BATCH_DATE", (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d"))
 
@@ -112,9 +97,8 @@ df = df \
     .withColumn("zone", get_zone_udf(col("latitude"), col("longitude"))) \
     .withColumn("hour_ts", date_trunc("hour", col("recorded_at"))) \
     .withColumn("hour_of_day", hour(col("recorded_at"))) \
-    .filter(col("zone") != "unknown")
-
-print(f"[Job B] Rows after filtering: {df.count()}")
+    .filter(col("zone") != "unknown") \
+    .cache()
 
 #  Hourly aggregation 
 hourly = df.groupBy("zone", "hour_ts").agg(
@@ -138,9 +122,6 @@ peak_hour_df = df.groupBy("zone", to_date(col("recorded_at")).alias("date"), "ho
 )
 
 # Find the peak hour per (zone, date)
-from pyspark.sql.window import Window
-from pyspark.sql.functions import rank
-
 w_peak = Window.partitionBy("zone", "date").orderBy(col("hcount").desc())
 peak_hour_top = peak_hour_df \
     .withColumn("rnk", rank().over(w_peak)) \
@@ -211,6 +192,7 @@ db.zone_traffic_hourly.create_index([("date", 1)], background=True)
 db.zone_traffic_daily.create_index([("zone", 1), ("date", 1)], unique=True, background=True)
 db.zone_traffic_daily.create_index([("vessel_count", -1)], background=True)
 
+df.unpersist()
 mongo_client.close()
 spark.stop()
 print("[Job B] Done.")

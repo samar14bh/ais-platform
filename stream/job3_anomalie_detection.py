@@ -65,65 +65,75 @@ def get_vessel_profile(mmsi):
         return profile
     return None
 
-# ── Anomaly detection function ─────────────────
-ANCHORED_STATUSES = {1, 5}  # put this line at the top of the file, outside the function
+# ── Anomaly detection ─────────────────────────
+ANCHORED_STATUSES = {1, 5}
+
+
+def _alert_id(mmsi: int, alert_type: str, window_minutes: int = 5) -> str:
+    # Bucket time into N-minute windows so the same vessel+type within one
+    # window always produces the same id. Upserts on this key are idempotent
+    # across batch replays, unlike hashing current_timestamp() per row.
+    from datetime import timezone
+    bucket = int(datetime.now(timezone.utc).timestamp() // (window_minutes * 60))
+    return hashlib.sha256(f"{mmsi}_{alert_type}_{bucket}".encode()).hexdigest()
+
 
 def detect_anomalies(batch_df, batch_id):
     if batch_df.isEmpty():
         return
-    
+
     db = mongo_client.ais_db
     alerts = []
-    
+
     for row in batch_df.collect():
-        # Anomaly 1: Stopped at sea (speed = 0, but not anchored/moored)
+        # Anomaly 1: stopped at sea (speed=0, not anchored/moored)
         if row.speed is not None and row.speed == 0 and row.nav_status not in ANCHORED_STATUSES:
             alerts.append({
-                "alert_id": hashlib.sha256(f"{row.mmsi}_{row.recorded_at}_stopped".encode()).hexdigest(),
-                "type": "vessel_stopped_at_sea",
-                "severity": "high",
-                "mmsi": row.mmsi,
+                "alert_id":  _alert_id(row.mmsi, "vessel_stopped_at_sea"),
+                "type":      "vessel_stopped_at_sea",
+                "severity":  "high",
+                "mmsi":      row.mmsi,
                 "ship_name": row.ship_name,
-                "latitude": row.latitude,
+                "latitude":  row.latitude,
                 "longitude": row.longitude,
-                "speed": row.speed,
+                "speed":     row.speed,
                 "timestamp": str(row.recorded_at),
-                "resolved": False
+                "resolved":  False,
             })
-        
-        # Anomaly 2: Abnormal speed (from profile)
+
+        # Anomaly 2: abnormal speed vs historical profile
         profile = get_vessel_profile(row.mmsi)
         if profile and row.speed is not None and row.speed > 5:
             normal_speed = profile.get("avg_speed", 15)
             std_dev = profile.get("speed_std_dev", 5)
-            
             if abs(row.speed - normal_speed) > 2 * std_dev:
                 alerts.append({
-                    "alert_id": hashlib.sha256(f"{row.mmsi}_{row.recorded_at}_speed".encode()).hexdigest(),
-                    "type": "abnormal_speed",
-                    "severity": "medium",
-                    "mmsi": row.mmsi,
-                    "ship_name": row.ship_name,
-                    "latitude": row.latitude,
-                    "longitude": row.longitude,
-                    "speed": row.speed,
+                    "alert_id":       _alert_id(row.mmsi, "abnormal_speed"),
+                    "type":           "abnormal_speed",
+                    "severity":       "medium",
+                    "mmsi":           row.mmsi,
+                    "ship_name":      row.ship_name,
+                    "latitude":       row.latitude,
+                    "longitude":      row.longitude,
+                    "speed":          row.speed,
                     "expected_speed": normal_speed,
-                    "timestamp": str(row.recorded_at),
-                    "resolved": False
+                    "timestamp":      str(row.recorded_at),
+                    "resolved":       False,
                 })
-    
-    # Insert new alerts (avoid duplicates)
+
+    # Upsert by alert_id — $setOnInsert makes this idempotent across replays
+    inserted = 0
     for alert in alerts:
-        existing = db.alerts.find_one({
-            "mmsi": alert["mmsi"],
-            "type": alert["type"],
-            "timestamp": {"$gte": str(datetime.now() - timedelta(minutes=5))}
-        })
-        if not existing:
-            db.alerts.insert_one(alert)
-    
-    if alerts:
-        print(f"[Anomalies] Batch {batch_id}: generated {len(alerts)} alerts")
+        result = db.alerts.update_one(
+            {"alert_id": alert["alert_id"]},
+            {"$setOnInsert": alert},
+            upsert=True,
+        )
+        if result.upserted_id:
+            inserted += 1
+
+    if inserted:
+        print(f"[Anomalies] Batch {batch_id}: inserted {inserted} new alerts")
         
 query = parsed.writeStream \
     .foreachBatch(detect_anomalies) \

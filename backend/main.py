@@ -43,6 +43,7 @@ def _redis_client() -> Redis:
     )
 
 
+@lru_cache(maxsize=1)
 def _mongo_client() -> MongoClient:
     return MongoClient(_mongo_uri())
 
@@ -183,7 +184,7 @@ def get_zone_stats(limit: int = Query(default=20, ge=1, le=500), zone: Optional[
         query["zone"] = zone
 
     stats = list(
-        collection.find(query, {"_id": 0}).sort("window_end", DESCENDING).limit(limit)
+        collection.find(query, {"_id": 0}).sort("timestamp", DESCENDING).limit(limit)
     )
     return {"count": len(stats), "data": stats}
 

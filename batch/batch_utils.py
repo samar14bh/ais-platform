@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, to_date
+from pyspark.sql.functions import col, lit
 
 
 def build_batch_spark_session(app_name, cassandra_host):
@@ -19,30 +19,30 @@ def read_vessel_positions_for_date(
     *,
     require_speed=False,
     null_island_delta=0.001,
-    enforce_global_bounds=False,
     select_columns=None,
 ):
+    # Filter on the `date` partition key so the Cassandra connector pushes it
+    # down to token-range reads. Using to_date(recorded_at) instead would
+    # bypass pushdown and load every partition into Spark memory.
     df = spark.read \
         .format("org.apache.spark.sql.cassandra") \
         .option("keyspace", "ais") \
         .option("table", "vessel_positions") \
-        .load()
+        .load() \
+        .filter(col("date") == lit(target_date))
 
-    df = df.filter(to_date(col("recorded_at")) == lit(target_date)) \
-           .filter(col("mmsi").isNotNull()) \
+    df = df.filter(col("mmsi").isNotNull()) \
            .filter(col("latitude").isNotNull()) \
            .filter(col("longitude").isNotNull()) \
            .filter(~(
                (col("latitude").between(-null_island_delta, null_island_delta)) &
                (col("longitude").between(-null_island_delta, null_island_delta))
-           ))
+           )) \
+           .filter(col("latitude").between(-90.0, 90.0)) \
+           .filter(col("longitude").between(-180.0, 180.0))
 
     if require_speed:
         df = df.filter(col("speed").isNotNull())
-
-    if enforce_global_bounds:
-        df = df.filter(col("latitude").between(-90, 90)) \
-               .filter(col("longitude").between(-180, 180))
 
     if select_columns:
         df = df.select(*select_columns)

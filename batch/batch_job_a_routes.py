@@ -21,17 +21,16 @@ Schema:
 
 """
 
+import math
 import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-import geohash2  
+import geohash2
 from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
-from pyspark.sql.functions import (
-    col, lag, udf
-)
-from pyspark.sql.types import StringType, DoubleType, StructType, StructField
+from pyspark.sql.functions import col, lag, udf
+from pyspark.sql.types import BooleanType, DoubleType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
 # Ensure shared module can be imported
@@ -73,8 +72,8 @@ def encode_geohash(lat, lon):
     except Exception:
         return None
 
+
 def geohash_center(gh):
-    """Return center lat, lon of a geohash cell as a struct."""
     if gh is None:
         return None
     try:
@@ -83,13 +82,31 @@ def geohash_center(gh):
     except Exception:
         return None
 
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    if any(v is None for v in (lat1, lon1, lat2, lon2)):
+        return None
+    r = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return r * 2 * math.asin(math.sqrt(a))
+
+
+def segment_within_range(lat1, lon1, lat2, lon2):
+    dist = _haversine_km(lat1, lon1, lat2, lon2)
+    return dist is not None and dist <= MAX_SEGMENT_KM
+
+
 center_schema = StructType([
     StructField("lat", DoubleType(), True),
     StructField("lon", DoubleType(), True),
 ])
 
-encode_geohash_udf = udf(encode_geohash, StringType())
-geohash_center_udf = udf(geohash_center, center_schema)
+encode_geohash_udf       = udf(encode_geohash, StringType())
+geohash_center_udf       = udf(geohash_center, center_schema)
+segment_within_range_udf = udf(segment_within_range, BooleanType())
 
 # ── Read from Cassandra 
 # Filter to target date and drop noise
@@ -97,12 +114,9 @@ df = read_vessel_positions_for_date(
     spark,
     TARGET_DATE,
     null_island_delta=NULL_ISLAND_DELTA,
-    enforce_global_bounds=True,
 )
 
-print(f"[Job A] Rows after filtering: {df.count()}")
-
-# ── Add geohash cell per position 
+# ── Add geohash cell per position
 df = df.withColumn("cell", encode_geohash_udf(col("latitude"), col("longitude")))
 
 # ── Build consecutive segments per vessel 
@@ -113,7 +127,11 @@ segments = df \
     .withColumn("prev_lat",  lag("latitude").over(w)) \
     .withColumn("prev_lon",  lag("longitude").over(w)) \
     .filter(col("prev_cell").isNotNull()) \
-    .filter(col("prev_cell") != col("cell"))  # skip stationary vessels
+    .filter(col("prev_cell") != col("cell")) \
+    .filter(segment_within_range_udf(
+        col("prev_lat"), col("prev_lon"), col("latitude"), col("longitude"),
+    )) \
+    .drop("prev_lat", "prev_lon")
 
 route_counts = segments.groupBy("prev_cell", "cell") \
     .agg(

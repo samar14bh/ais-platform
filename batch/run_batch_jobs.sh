@@ -30,6 +30,20 @@ PYTHONPATH_CONF="--conf spark.driverEnv.PYTHONPATH=/opt/spark-jobs:/opt/spark-jo
 echo "Starting Spark jobs..."
 echo ""
 
+# Job D: Vessel behavioral profiles — must run first, stream job 3 depends on these
+echo "┌─ Job D: Vessel Behavioral Profiling"
+echo "│  Reads: Cassandra → vessel_positions"
+echo "│  Writes: MongoDB → vessel_profiles"
+$SPARK_SUBMIT $IVY_CONF $PYTHONPATH_CONF --packages "$PACKAGES" /opt/spark-jobs/batch/batch_job_d_vessel_profiles.py
+if [ $? -eq 0 ]; then
+    echo "└─ ✓ Job D completed"
+else
+    echo "└─ ✗ Job D failed"
+    exit 1
+fi
+
+echo ""
+
 # Job A: Route segments
 echo "┌─ Job A: Route Segments Analysis"
 echo "│  Reads: Cassandra → vessel_positions"
@@ -61,7 +75,7 @@ echo ""
 # Job C: Heatmap
 echo "┌─ Job C: Heatmap Analysis"
 echo "│  Reads: Cassandra → vessel_positions"
-echo "│  Writes: MongoDB → vessel_heatmap"
+echo "│  Writes: MongoDB → heatmap_tiles_p5, heatmap_tiles_p6"
 $SPARK_SUBMIT $IVY_CONF $PYTHONPATH_CONF --packages "$PACKAGES" /opt/spark-jobs/batch/batch_job_c_heatmap.py
 if [ $? -eq 0 ]; then
     echo "└─ ✓ Job C completed"
