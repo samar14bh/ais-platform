@@ -40,16 +40,32 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
     healthcheck:
-      test: ["CMD", "bash", "-c", "kafka-topics --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
+      test: ["CMD", "bash", "-c", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
 
   # ── HDFS ──────────────────────────────
   hdfs-namenode:
     image: apache/hadoop:3.3.6
     hostname: hdfs-namenode
-    command: ["hdfs", "namenode"]
+    # The named volume is created by Docker as root:root 755.
+    # Fix ownership so the hadoop user (uid=1000) can write into it,
+    # then format on a fresh volume only (VERSION file absent).
+    # On subsequent starts the existing filesystem is reused unchanged.
+    user: root
+    command: >
+      bash -c "
+        chown -R hadoop:users /hadoop/dfs/name &&
+        if [ ! -f /hadoop/dfs/name/current/VERSION ]; then
+          echo '[namenode] Fresh volume — formatting filesystem...' &&
+          su -s /bin/bash hadoop -c 'hdfs namenode -format -nonInteractive -force';
+        else
+          echo '[namenode] Existing filesystem found — skipping format.';
+        fi &&
+        su -s /bin/bash hadoop -c 'hdfs namenode'
+      "
     ports:
       - "9870:9870"   # NameNode Web UI
       - "8020:8020"   # NameNode RPC (Spark connects here)
@@ -60,16 +76,22 @@ services:
       - ./config/hadoop.env
     volumes:
       - hdfs_namenode:/hadoop/dfs/name
+    mem_limit: 768m
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9870/"]
       interval: 30s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 60s
 
   hdfs-datanode:
     image: apache/hadoop:3.3.6
-    command: ["hdfs", "datanode"]
+    user: root
+    command: >
+      bash -c "
+        chown -R hadoop:users /hadoop/dfs/data &&
+        su -s /bin/bash hadoop -c 'hdfs datanode'
+      "
     depends_on:
       hdfs-namenode:
         condition: service_healthy
@@ -79,6 +101,7 @@ services:
       - ./config/hadoop.env
     volumes:
       - hdfs_datanode:/hadoop/dfs/data
+    mem_limit: 768m
 
   # ── Redis ─────────────────────────────
   redis:
@@ -91,8 +114,14 @@ services:
     image: cassandra:4.1
     ports:
       - "9042:9042"
+    environment:
+      # Cap Cassandra JVM heap — default is 1/4 of system RAM which is too
+      # aggressive in a shared Docker environment.
+      MAX_HEAP_SIZE: 1024M
+      HEAP_NEWSIZE: 256M
     volumes:
       - cassandra_data:/var/lib/cassandra
+    mem_limit: 2g
     healthcheck:
       test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
       interval: 30s
@@ -131,11 +160,13 @@ services:
       - ./shared:/opt/spark-jobs/shared
     environment:
       - SPARK_NO_DAEMONIZE=true
+      - SPARK_DAEMON_MEMORY=256m
       - CASSANDRA_HOST=cassandra
       - MONGO_USER=${MONGO_USER}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
       - HDFS_NAMENODE=hdfs-namenode
       - HDFS_PORT=8020
+    mem_limit: 768m
 
   spark-worker:
     build:
@@ -152,11 +183,13 @@ services:
       - ./shared:/opt/spark-jobs/shared
     environment:
       - SPARK_NO_DAEMONIZE=true
+      - SPARK_WORKER_MEMORY=512m
       - CASSANDRA_HOST=cassandra
       - MONGO_USER=${MONGO_USER}
       - MONGO_PASSWORD=${MONGO_PASSWORD}
       - HDFS_NAMENODE=hdfs-namenode
       - HDFS_PORT=8020
+    mem_limit: 768m
 
   stream-job1:
     build:
@@ -185,9 +218,11 @@ services:
       - MONGO_PASSWORD=${MONGO_PASSWORD}
       - HDFS_NAMENODE=hdfs-namenode
       - HDFS_PORT=8020
+    mem_limit: 1g
     command: >
       bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
       /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
+      --conf spark.driver.memory=768m
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,com.datastax.spark:spark-cassandra-connector_2.12:3.5.0
       /opt/spark-jobs/stream/job1_positions.py"
     restart: unless-stopped
@@ -216,9 +251,11 @@ services:
       - MONGO_PASSWORD=${MONGO_PASSWORD}
       - HDFS_NAMENODE=hdfs-namenode
       - HDFS_PORT=8020
+    mem_limit: 900m
     command: >
       bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
       /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
+      --conf spark.driver.memory=768m
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
       /opt/spark-jobs/stream/job2_zone_aggregation.py"
     restart: unless-stopped
@@ -247,9 +284,11 @@ services:
       - MONGO_PASSWORD=${MONGO_PASSWORD}
       - HDFS_NAMENODE=hdfs-namenode
       - HDFS_PORT=8020
+    mem_limit: 900m
     command: >
       bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
       /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
+      --conf spark.driver.memory=768m
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
       /opt/spark-jobs/stream/job3_anomalie_detection.py"
     restart: unless-stopped
@@ -273,9 +312,11 @@ services:
       - KAFKA_BROKER=kafka:9092
       - HDFS_NAMENODE=hdfs-namenode
       - HDFS_PORT=8020
+    mem_limit: 900m
     command: >
       bash -lc "mkdir -p /tmp/.ivy2/cache /tmp/.ivy2/jars &&
       /opt/spark/bin/spark-submit --conf spark.jars.ivy=/tmp/.ivy2
+      --conf spark.driver.memory=768m
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0
       /opt/spark-jobs/stream/job4_hdfs_archive.py"
     restart: unless-stopped
@@ -318,6 +359,7 @@ services:
       - MONGO_PASSWORD=${MONGO_PASSWORD}
       - HDFS_NAMENODE=hdfs-namenode
       - HDFS_PORT=8020
+    mem_limit: 256m
     command: >
       bash -c "chmod 0644 /etc/cron.d/spark-batch &&
       crontab /etc/cron.d/spark-batch &&

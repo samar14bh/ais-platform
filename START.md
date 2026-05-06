@@ -10,8 +10,9 @@ is working correctly.
 
 Before you start, make sure you have:
 
-- **Docker Desktop** running with at least **8 GB RAM** allocated to containers
-  (Settings → Resources → Memory). Spark needs headroom.
+- **Docker Desktop** running with at least **10 GB RAM** allocated to containers
+  (Settings → Resources → Memory). The full stack — 4 Spark streaming jobs, Cassandra,
+  HDFS, Kafka, MongoDB, Redis — peaks around 8.5 GB under load.
 - **Node.js 18+** installed locally (for the frontend dev server).
 - **Python 3.9+** installed locally (only needed to run the CSV loader script).
 - An **AISStream API key** — free registration at https://aisstream.io. Required
@@ -32,9 +33,6 @@ Open `.env` and fill in the required values:
 ```
 MONGO_USER=admin
 MONGO_PASSWORD=yourpassword
-
-MINIO_USER=minioadmin
-MINIO_PASSWORD=yourpassword
 
 AISSTREAM_API_KEY=your_key_here
 ```
@@ -77,20 +75,17 @@ docker compose ps hdfs-namenode
 Wait until STATUS shows `healthy`. You can also open the NameNode Web UI at
 http://localhost:9870 — it is ready when you see the "Overview" page.
 
-Once both are healthy, create the required HDFS directories:
+Once both are healthy, create the required HDFS directories. The NameNode runs
+as the `hadoop` user so we use `su` to issue filesystem commands:
 
 ```powershell
-docker compose exec hdfs-namenode hdfs dfs -mkdir -p /ais/vessel_positions
-docker compose exec hdfs-namenode hdfs dfs -mkdir -p /ais/checkpoints
-docker compose exec hdfs-namenode hdfs dfs -chmod 777 /ais
-docker compose exec hdfs-namenode hdfs dfs -chmod 777 /ais/vessel_positions
-docker compose exec hdfs-namenode hdfs dfs -chmod 777 /ais/checkpoints
+docker compose exec hdfs-namenode bash -c "su -s /bin/bash hadoop -c 'hdfs dfs -mkdir -p /ais/vessel_positions && hdfs dfs -mkdir -p /ais/checkpoints && hdfs dfs -chmod 777 /ais /ais/vessel_positions /ais/checkpoints'"
 ```
 
 Verify the directories were created:
 
 ```powershell
-docker compose exec hdfs-namenode hdfs dfs -ls /ais
+docker compose exec hdfs-namenode bash -c "su -s /bin/bash hadoop -c 'hdfs dfs -ls /ais'"
 ```
 
 Expected:
@@ -127,7 +122,7 @@ vessel_positions  batch_job_runs
 ```powershell
 $id = (docker compose ps -q mongodb).Trim()
 docker cp scripts\init_mongo.js ${id}:/tmp/init_mongo.js
-docker compose exec mongodb mongosh -u $env:MONGO_USER -p $env:MONGO_PASSWORD --authenticationDatabase admin /tmp/init_mongo.js
+docker compose exec mongodb mongosh "mongodb://admin:admin@localhost:27017/admin?authSource=admin" /tmp/init_mongo.js
 ```
 
 Expected output ends with:
@@ -315,22 +310,22 @@ first few minutes while the stream processes its initial batches. The
 After stream job 4 has run for at least 60 seconds (its trigger interval):
 
 ```powershell
-docker compose exec hdfs-namenode hdfs dfs -ls /ais/vessel_positions
+docker compose exec hdfs-namenode bash -c "su -s /bin/bash hadoop -c 'hdfs dfs -ls /ais/vessel_positions'"
 ```
 
 Expected: one or more `year=` directories:
 ```
-drwxr-xr-x  - root supergroup  /ais/vessel_positions/year=2026
+drwxr-xr-x  - hadoop supergroup  /ais/vessel_positions/year=2026
 ```
 
 Drill down to verify Parquet files exist:
 ```powershell
-docker compose exec hdfs-namenode hdfs dfs -ls -R /ais/vessel_positions
+docker compose exec hdfs-namenode bash -c "su -s /bin/bash hadoop -c 'hdfs dfs -ls -R /ais/vessel_positions'"
 ```
 
 Check that stream checkpoints are also on HDFS:
 ```powershell
-docker compose exec hdfs-namenode hdfs dfs -ls /ais/checkpoints
+docker compose exec hdfs-namenode bash -c "su -s /bin/bash hadoop -c 'hdfs dfs -ls /ais/checkpoints'"
 ```
 
 Expected: a directory per stream job (`job1_redis`, `job1_cassandra`,

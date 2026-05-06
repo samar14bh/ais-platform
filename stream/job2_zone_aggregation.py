@@ -21,12 +21,6 @@ except ModuleNotFoundError:
         parse_ais_payload,
     )
 
-try:
-    from shared.zones import get_zone
-except ModuleNotFoundError:
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from shared.zones import get_zone
-
 env = load_stream_env(default_starting_offsets="latest")
 KAFKA_BROKER = env["kafka_broker"]
 MONGO_URI = env["mongo_uri"]
@@ -35,7 +29,32 @@ mongo_client = MongoClient(MONGO_URI)
 
 CHECKPOINT_JOB2 = f"{HDFS_URI}/ais/checkpoints/job2_zones"
 
-get_zone_udf = udf(get_zone, StringType())
+# The UDF is cloudpickled and re-imported in each executor worker process.
+# Worker processes start with a bare sys.path and don't inherit the driver's
+# path. The zone logic is inlined here so no external import is needed at
+# unpickle time — the function is fully self-contained.
+def _get_zone_inline(lat, lon):
+    if lat is None or lon is None:
+        return "unknown"
+    if 35.0 <= lat <= 42.0 and -6.0 <= lon <= 0.0:
+        return "gibraltar"
+    if 35.0 <= lat <= 40.0 and 0.0 <= lon <= 5.0:
+        return "alboran"
+    if 37.0 <= lat <= 44.0 and 5.0 <= lon <= 15.0:
+        return "balearic_tyrrhenian"
+    if 38.0 <= lat <= 46.0 and 12.0 <= lon <= 22.0:
+        return "adriatic"
+    if 30.0 <= lat <= 38.0 and 9.0 <= lon <= 16.0:
+        return "central_med"
+    if 35.0 <= lat <= 42.0 and 19.0 <= lon <= 30.0:
+        return "aegean"
+    if 30.0 <= lat <= 42.0 and 26.0 <= lon <= 37.0:
+        return "eastern_med"
+    if 30.0 <= lat <= 48.0 and 27.0 <= lon <= 42.0:
+        return "black_sea"
+    return "other"
+
+get_zone_udf = udf(_get_zone_inline, StringType())
 
 # ── Spark session ──────────────────────────────
 spark = build_stream_spark_session("AIS_Job2_ZoneAnalytics")

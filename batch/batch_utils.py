@@ -65,9 +65,11 @@ def read_vessel_positions_from_hdfs(
     # Parse the target_date string into components for partition path
     from datetime import datetime
     dt = datetime.strptime(target_date, "%Y-%m-%d")
+    # Spark's month()/dayofmonth() write integer partition names without
+    # zero-padding (month=4, day=8) — match that exactly here.
     partition_path = (
         f"{hdfs_uri}/ais/vessel_positions"
-        f"/year={dt.year}/month={dt.month:02d}/day={dt.day:02d}"
+        f"/year={dt.year}/month={dt.month}/day={dt.day}"
     )
 
     df = spark.read.parquet(partition_path)
