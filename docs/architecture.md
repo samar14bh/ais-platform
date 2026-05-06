@@ -70,7 +70,7 @@ AISStream (external WebSocket)
 | **Analytics storage** | MongoDB 7 | Schema-flexible for heterogeneous analytics documents. Fast point reads on indexed fields. Upsert semantics simplify idempotent batch writes. |
 | **Live cache** | Redis 7 | Sub-millisecond key lookup. Sorted sets give O(log n) active-vessel discovery. TTL auto-expires stale vessels. |
 | **API layer** | FastAPI + Uvicorn | Async, minimal overhead. WebSocket support built-in. Auto-generated OpenAPI docs. |
-| **Frontend** | React 19 + Vite + Leaflet + Recharts | Component-based UI, hot-module reload in dev. Leaflet for tile-based map; Recharts for time-series charts. |
+| **Frontend** | React 19 + Vite + Leaflet + Recharts | Component-based UI, hot-module reload in dev. Leaflet with CartoDB Dark Matter tiles (no CSS filter — GPU composited); Recharts for time-series charts. |
 | **Container orchestration** | Docker Compose v2 | Single-machine local development. `--profile full` selects the complete stack; omitting it runs infrastructure only. |
 
 ---

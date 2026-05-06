@@ -43,8 +43,6 @@
   --radius-md: 14px;
   --radius-lg: 20px;
   --radius-xl: 24px;
-  --map-tile-filter: invert(1) hue-rotate(180deg) brightness(0.95) contrast(0.92) saturate(0.85);
-
   --tooltip-bg: rgba(13, 22, 48, 0.96);
   --tooltip-border: rgba(103, 232, 249, 0.22);
   --popup-bg: rgba(13, 22, 48, 0.96);
@@ -81,8 +79,6 @@
   --shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.06);
   --shadow-md: 0 10px 24px rgba(15, 23, 42, 0.08);
   --shadow-lg: 0 24px 48px rgba(15, 23, 42, 0.12);
-  --map-tile-filter: none;
-
   --tooltip-bg: rgba(255, 255, 255, 0.98);
   --tooltip-border: rgba(15, 23, 42, 0.12);
   --popup-bg: #ffffff;

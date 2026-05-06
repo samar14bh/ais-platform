@@ -198,11 +198,11 @@ TypeScript interfaces matching the backend JSON shapes: `ShipData`, `Alert`,
 |---|---|
 | `Header.tsx` | Top bar with KPI chips (vessel count, avg speed, feed status) |
 | `Sidebar.tsx` | Left panel: vessel search, recent alerts, layer toggles |
-| `VesselMap.tsx` | Leaflet map: vessel markers, popups, heatmap overlay, route polylines |
+| `VesselMap.tsx` | Leaflet map with CartoDB Dark Matter tiles; animated vessel markers (zoom-scaled, heading-rotated); heatmap and route overlays |
 | `VesselDetail.tsx` | Right panel: selected vessel metadata and trajectory trail |
-| `TrafficInsightsPage.tsx` | Full-screen analytics view with zone charts and stats tables |
+| `TrafficInsightsPage.tsx` | Analytics view: KPI cards, zone share donut, hourly stacked bar, daily trend line, heatmap grid stats |
 | `ZoneTrafficChart.tsx` | Recharts line/bar charts for zone traffic trends |
-| `HeatmapToggle.tsx` | Leaflet.heat integration; toggle from sidebar |
+| `HeatmapToggle.tsx` | Geohash rectangle overlay; toggle from sidebar |
 | `RouteFlowLayer.tsx` | Weighted polylines from route_segments data |
 
 ---

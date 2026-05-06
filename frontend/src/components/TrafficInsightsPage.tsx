@@ -1,11 +1,13 @@
 import { memo, useEffect, useMemo, useState } from 'react';
 import {
+  Bar,
+  BarChart,
   Cell,
-  Legend,
-  Pie,
-  PieChart,
+  LabelList,
   ResponsiveContainer,
   Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
 import { fetchHeatmap, fetchZoneTraffic } from '../api';
 import type { HeatmapTile, ZoneTraffic } from '../api';
@@ -109,20 +111,6 @@ function TrafficInsightsPageBase({ ships, lastUpdate }: TrafficInsightsPageProps
   const heatmapP5Summary = useMemo(() => buildHeatmapSummary(heatmapStats.p5), [heatmapStats.p5]);
   const heatmapP6Summary = useMemo(() => buildHeatmapSummary(heatmapStats.p6), [heatmapStats.p6]);
 
-  const pieTooltip = (payload: unknown) => {
-    if (!Array.isArray(payload) || payload.length === 0) return null;
-    const entry = payload[0]?.payload as { name?: string; value?: number; percent?: number };
-    if (!entry) return null;
-
-    return (
-      <div className="chart-tooltip-content">
-        <strong>{entry.name}</strong>
-        <span>{entry.value ?? 0} vessels</span>
-        <span>{formatPercent(entry.percent ?? 0)} of daily traffic</span>
-      </div>
-    );
-  };
-
   return (
     <div className="traffic-insights-page">
       <section className="surface insight-banner">
@@ -147,7 +135,7 @@ function TrafficInsightsPageBase({ ships, lastUpdate }: TrafficInsightsPageProps
         <div className="surface-head">
           <div>
             <span className="eyebrow">Daily distribution</span>
-            <h2>Zone share pie chart</h2>
+            <h2>Zone share</h2>
           </div>
           <span className="surface-meta">Based on zone_traffic_daily vessel counts</span>
         </div>
@@ -156,49 +144,55 @@ function TrafficInsightsPageBase({ ships, lastUpdate }: TrafficInsightsPageProps
           <div className="summary-state">Loading insight stats…</div>
         ) : statsError && zoneShareData.length === 0 ? (
           <div className="summary-state error">{statsError}</div>
+        ) : zoneShareData.length === 0 ? (
+          <div className="summary-state">No daily data yet — run batch jobs first.</div>
         ) : (
-          <div className="summary-layout">
-            <div className="summary-chart-card">
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={zoneShareData}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={78}
-                    outerRadius={118}
-                    paddingAngle={3}
-                    stroke="var(--bg-panel)"
-                    isAnimationActive={false}
-                  >
-                    {zoneShareData.map((entry, index) => (
-                      <Cell
-                        key={entry.name}
-                        fill={piePalette[index % piePalette.length]}
-                      />
-                    ))}
-                  </Pie>
-                  <Tooltip content={({ payload }) => pieTooltip(payload)} />
-                  <Legend />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div className="summary-legend">
-              {zoneShareData.map((item, index) => (
-                <div className="summary-legend-row" key={item.name}>
-                  <span
-                    className="summary-legend-swatch"
-                    style={{ backgroundColor: piePalette[index % piePalette.length] }}
-                  />
-                  <span className="summary-legend-name">{item.name}</span>
-                  <span className="summary-legend-value">
-                    {item.value} vessels · {formatPercent(item.percent)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
+          <ResponsiveContainer width="100%" height={zoneShareData.length * 44 + 16}>
+            <BarChart
+              data={zoneShareData}
+              layout="vertical"
+              margin={{ top: 0, right: 64, bottom: 0, left: 0 }}
+              barCategoryGap="28%"
+            >
+              <XAxis
+                type="number"
+                hide
+                domain={[0, 'dataMax']}
+              />
+              <YAxis
+                type="category"
+                dataKey="name"
+                width={130}
+                tick={{ fontSize: 13, fill: 'var(--text-main)', fontWeight: 600 }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <Tooltip
+                cursor={{ fill: 'var(--bg-soft)' }}
+                contentStyle={{
+                  backgroundColor: 'var(--tooltip-bg)',
+                  border: '1px solid var(--tooltip-border)',
+                  borderRadius: 'var(--radius-md)',
+                  fontSize: 12,
+                }}
+                formatter={(value: number, _: string, entry: { payload?: { percent?: number } }) => [
+                  `${value} vessels (${formatPercent(entry.payload?.percent ?? 0)})`,
+                  'Vessels',
+                ]}
+              />
+              <Bar dataKey="value" radius={[0, 6, 6, 0]} isAnimationActive={false}>
+                {zoneShareData.map((entry, index) => (
+                  <Cell key={entry.name} fill={piePalette[index % piePalette.length]} />
+                ))}
+                <LabelList
+                  dataKey="percent"
+                  position="right"
+                  formatter={(v: number) => formatPercent(v)}
+                  style={{ fontSize: 12, fill: 'var(--text-muted)', fontWeight: 600 }}
+                />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         )}
       </section>
 

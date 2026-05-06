@@ -241,30 +241,33 @@ function App() {
         />
 
         <section className="workspace">
-          {!showInsights ? (
-            <div className="surface map-surface">
-              <div className="surface-head">
-                <div>
-                  <span className="eyebrow">Live map</span>
-                  <h2>Fleet movement</h2>
-                </div>
-                <span className="surface-meta">
-                  {lastUpdate ? `Refreshed ${lastUpdate}` : 'Waiting for feed…'}
-                </span>
+          <div className="surface map-surface">
+            <div className="surface-head">
+              <div>
+                <span className="eyebrow">Live map</span>
+                <h2>Fleet movement</h2>
               </div>
-
-              <VesselMap
-                ships={ships}
-                onSelectVessel={handleSelectVessel}
-                showHeatmap={showHeatmap}
-                showRoutes={showRoutes}
-              />
+              <span className="surface-meta">
+                {lastUpdate ? `Refreshed ${lastUpdate}` : 'Waiting for feed…'}
+              </span>
             </div>
-          ) : (
-            <TrafficInsightsPage ships={ships} lastUpdate={lastUpdate} />
-          )}
+
+            <VesselMap
+              ships={ships}
+              onSelectVessel={handleSelectVessel}
+              showHeatmap={showHeatmap}
+              showRoutes={showRoutes}
+              theme={theme}
+            />
+          </div>
         </section>
       </main>
+
+      {showInsights && (
+        <div className="insights-overlay">
+          <TrafficInsightsPage ships={ships} lastUpdate={lastUpdate} />
+        </div>
+      )}
 
       {selectedVesselMmsi && (
         <VesselDetail

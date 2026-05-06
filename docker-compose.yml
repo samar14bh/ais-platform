@@ -99,6 +99,11 @@ services:
       HADOOP_HOME: /opt/hadoop
     command: >
       bash -c "
+        echo '[hdfs-init] Waiting for NameNode RPC on port 8020...' &&
+        until su -s /bin/bash hadoop -c 'hdfs dfs -ls / > /dev/null 2>&1'; do
+          sleep 2;
+        done &&
+        echo '[hdfs-init] RPC ready. Creating directories...' &&
         su -s /bin/bash hadoop -c '
           hdfs dfs -mkdir -p /ais/vessel_positions &&
           hdfs dfs -mkdir -p /ais/checkpoints &&

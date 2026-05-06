@@ -5,28 +5,55 @@ import { HeatmapToggle } from './HeatmapToggle';
 import { RouteFlowLayer } from './RouteFlowLayer';
 import type { ShipData } from '../types';
 
+const CARTO_DARK   = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const CARTO_VOYAGER = 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+
+// Ship colors per theme. Dark map → warm amber stands out without blending into
+// the cyan UI chrome. Light/Voyager map → deep navy is readable on the beige tiles.
+const ICON_COLORS = {
+  dark:  { fill: '#f97316', stroke: '#c2410c' },
+  light: { fill: '#1e3a8a', stroke: '#1e3a5f' },
+} as const;
+
+
 /* -------------------------------------------------------------
  * Icon cache: divIcons keyed by 10° heading buckets so we don't
  * allocate fresh DOM strings every WS tick.
  * ----------------------------------------------------------- */
-const SHIP_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 21c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1 .6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M19.38 20A11.6 11.6 0 0 0 21 14l-9-4-9 4c0 2.9.94 5.34 2.81 7.76"/><path d="M19 13V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v6"/><path d="M12 10v4"/><path d="M12 2v3"/></svg>`;
+// Simple filled arrow — points "up" (north) in SVG space; we rotate by heading.
+// Flat shape renders fast: no radial gradient, no glow layers, no shadow.
+const makeShipSvg = (size: number, fill: string, stroke: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 20 20"><polygon points="10,1 17,17 10,13 3,17" fill="${fill}" stroke="${stroke}" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
 
-const iconCache = new Map<number, L.DivIcon>();
+// Cache keyed by heading-size-theme so swapping themes invalidates entries.
+const iconCache = new Map<string, L.DivIcon>();
 
-const getShipIcon = (heading: number) => {
+const getShipIcon = (heading: number, size: number, theme: 'dark' | 'light') => {
   const bucket = Math.round((((heading % 360) + 360) % 360) / 10) * 10;
-  const cached = iconCache.get(bucket);
+  const key = `${bucket}-${size}-${theme}`;
+  const cached = iconCache.get(key);
   if (cached) return cached;
 
-  const html = `<div style="transform: rotate(${bucket}deg); width: 30px; height: 30px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, rgba(255,255,255,0.25), rgba(34,211,238,0.25) 40%, rgba(15,23,42,0.95) 75%); border: 1px solid rgba(103,232,249,0.6); box-shadow: 0 0 0 4px rgba(34,211,238,0.1), 0 8px 16px rgba(2,8,23,0.4); display:flex; align-items:center; justify-content:center; color:#e2f5ff;">${SHIP_SVG}</div>`;
+  const { fill, stroke } = ICON_COLORS[theme];
+  const half = size / 2;
+  const html = `<div style="transform:rotate(${bucket}deg);width:${size}px;height:${size}px;display:flex;align-items:center;justify-content:center;">${makeShipSvg(size, fill, stroke)}</div>`;
   const icon = L.divIcon({
     className: 'custom-ship-icon',
     html,
-    iconSize: [30, 30],
-    iconAnchor: [15, 15],
+    iconSize: [size, size],
+    iconAnchor: [half, half],
   });
-  iconCache.set(bucket, icon);
+  iconCache.set(key, icon);
   return icon;
+};
+
+// Map zoom → icon size in pixels.
+const zoomToIconSize = (zoom: number): number => {
+  if (zoom <= 5)  return 14;
+  if (zoom <= 7)  return 18;
+  if (zoom <= 9)  return 22;
+  if (zoom <= 11) return 26;
+  return 30;
 };
 
 const escapeHtml = (value: unknown) => {
@@ -67,6 +94,7 @@ interface AnimTarget {
 interface AnimatedShipLayerProps {
   ships: ShipData[];
   onSelectVessel?: (mmsi: string) => void;
+  theme: 'dark' | 'light';
 }
 
 /**
@@ -76,16 +104,42 @@ interface AnimatedShipLayerProps {
  * seconds, and avoids the per-tick React reconciliation cost of mounting
  * <Marker /> components for every vessel.
  */
-function AnimatedShipLayer({ ships, onSelectVessel }: AnimatedShipLayerProps) {
+function AnimatedShipLayer({ ships, onSelectVessel, theme }: AnimatedShipLayerProps) {
   const map = useMap();
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const targetsRef = useRef<Map<string, AnimTarget>>(new Map());
   const onSelectRef = useRef(onSelectVessel);
+  const [iconSize, setIconSize] = useState(() => zoomToIconSize(map.getZoom()));
 
   // Keep latest click handler without re-running the sync effect.
   useEffect(() => {
     onSelectRef.current = onSelectVessel;
   }, [onSelectVessel]);
+
+  // Update icon size when the user zooms.
+  useEffect(() => {
+    const onZoom = () => {
+      const newSize = zoomToIconSize(map.getZoom());
+      setIconSize((prev) => {
+        if (prev === newSize) return prev;
+        for (const [id, marker] of markersRef.current) {
+          const target = targetsRef.current.get(id);
+          marker.setIcon(getShipIcon(target?.heading ?? 0, newSize, theme));
+        }
+        return newSize;
+      });
+    };
+    map.on('zoomend', onZoom);
+    return () => { map.off('zoomend', onZoom); };
+  }, [map, theme]);
+
+  // When theme changes, refresh all existing marker icons.
+  useEffect(() => {
+    for (const [id, marker] of markersRef.current) {
+      const target = targetsRef.current.get(id);
+      marker.setIcon(getShipIcon(target?.heading ?? 0, iconSize, theme));
+    }
+  }, [theme, iconSize]);
 
   // Sync markers to the latest ships list (add new, update target, remove gone).
   useEffect(() => {
@@ -101,8 +155,7 @@ function AnimatedShipLayer({ ships, onSelectVessel }: AnimatedShipLayerProps) {
 
       if (!marker) {
         marker = L.marker([ship.lat, ship.lon], {
-          icon: getShipIcon(heading),
-          // Built-in marker drag-to-target pan can interfere; keep default.
+          icon: getShipIcon(heading, iconSize, theme),
         });
         marker.on('click', () => onSelectRef.current?.(ship.id));
         marker.bindPopup(popupHtml);
@@ -129,8 +182,6 @@ function AnimatedShipLayer({ ships, onSelectVessel }: AnimatedShipLayerProps) {
       const prevTarget = targetsRef.current.get(ship.id);
       const headingChanged = !prevTarget || prevTarget.heading !== heading;
 
-      // Start the new animation from the marker's CURRENT screen position
-      // (which may be mid-interp), so motion is continuous.
       targetsRef.current.set(ship.id, {
         fromLat: teleport ? ship.lat : current.lat,
         fromLon: teleport ? ship.lon : current.lng,
@@ -144,7 +195,7 @@ function AnimatedShipLayer({ ships, onSelectVessel }: AnimatedShipLayerProps) {
         marker.setLatLng([ship.lat, ship.lon]);
       }
       if (headingChanged) {
-        marker.setIcon(getShipIcon(heading));
+        marker.setIcon(getShipIcon(heading, iconSize, theme));
       }
       marker.setPopupContent(popupHtml);
     }
@@ -157,7 +208,7 @@ function AnimatedShipLayer({ ships, onSelectVessel }: AnimatedShipLayerProps) {
         targetsRef.current.delete(id);
       }
     }
-  }, [ships, map]);
+  }, [ships, map, theme, iconSize]);
 
   // rAF animation loop — runs once for the lifetime of the layer.
   useEffect(() => {
@@ -218,6 +269,7 @@ interface VesselMapProps {
   onSelectVessel?: (mmsi: string) => void;
   showHeatmap?: boolean;
   showRoutes?: boolean;
+  theme?: 'dark' | 'light';
 }
 
 function VesselMapBase({
@@ -225,6 +277,7 @@ function VesselMapBase({
   onSelectVessel,
   showHeatmap = false,
   showRoutes = false,
+  theme = 'dark',
 }: VesselMapProps) {
   const [heatmapStatus, setHeatmapStatus] = useState({
     loading: false,
@@ -236,6 +289,8 @@ function VesselMapBase({
     empty: false,
     error: null as string | null,
   });
+
+  const tileUrl = theme === 'light' ? CARTO_VOYAGER : CARTO_DARK;
 
   return (
     <div className="map-container">
@@ -260,20 +315,25 @@ function VesselMapBase({
       <MapContainer
         center={[36.2, 10.5]}
         zoom={6}
+        minZoom={4}
+        maxBounds={[[-10, -50], [75, 80]]}
+        maxBoundsViscosity={1.0}
         scrollWheelZoom
         zoomControl={false}
         preferCanvas
       >
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          className="dark-tiles"
+          key={tileUrl}
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          url={tileUrl}
+          subdomains="abcd"
+          maxZoom={19}
           updateWhenIdle
           keepBuffer={2}
         />
         <HeatmapToggle enabled={showHeatmap} onStatusChange={setHeatmapStatus} />
         <RouteFlowLayer enabled={showRoutes} onStatusChange={setRouteStatus} />
-        <AnimatedShipLayer ships={ships} onSelectVessel={onSelectVessel} />
+        <AnimatedShipLayer ships={ships} onSelectVessel={onSelectVessel} theme={theme} />
       </MapContainer>
     </div>
   );
