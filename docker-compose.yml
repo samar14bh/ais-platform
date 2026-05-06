@@ -84,6 +84,29 @@ services:
       retries: 10
       start_period: 60s
 
+  # Runs once after NameNode is healthy — creates /ais directories and sets
+  # permissions to 777 so Spark containers (running as root) can write
+  # checkpoints and Parquet files without hitting AccessControlException.
+  hdfs-init:
+    image: apache/hadoop:3.3.6
+    user: root
+    depends_on:
+      hdfs-namenode:
+        condition: service_healthy
+    env_file:
+      - ./config/hadoop.env
+    environment:
+      HADOOP_HOME: /opt/hadoop
+    command: >
+      bash -c "
+        su -s /bin/bash hadoop -c '
+          hdfs dfs -mkdir -p /ais/vessel_positions &&
+          hdfs dfs -mkdir -p /ais/checkpoints &&
+          hdfs dfs -chmod -R 777 /ais
+        ' && echo '[hdfs-init] Done.'
+      "
+    restart: "no"
+
   hdfs-datanode:
     image: apache/hadoop:3.3.6
     user: root
@@ -206,8 +229,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      hdfs-namenode:
-        condition: service_healthy
+      hdfs-init:
+        condition: service_completed_successfully
     volumes:
       - ./stream:/opt/spark-jobs/stream
     environment:
@@ -240,8 +263,8 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_started
-      hdfs-namenode:
-        condition: service_healthy
+      hdfs-init:
+        condition: service_completed_successfully
     volumes:
       - ./stream:/opt/spark-jobs/stream
       - ./shared:/opt/spark-jobs/shared
@@ -273,8 +296,8 @@ services:
         condition: service_healthy
       mongodb:
         condition: service_started
-      hdfs-namenode:
-        condition: service_healthy
+      hdfs-init:
+        condition: service_completed_successfully
     volumes:
       - ./stream:/opt/spark-jobs/stream
       - ./shared:/opt/spark-jobs/shared
@@ -304,8 +327,8 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
-      hdfs-namenode:
-        condition: service_healthy
+      hdfs-init:
+        condition: service_completed_successfully
     volumes:
       - ./stream:/opt/spark-jobs/stream
     environment:
