@@ -229,6 +229,4 @@ Infrastructure services (`kafka`, `cassandra`, `redis`, `mongodb`,
 - **Alert resolution** is manual (direct MongoDB update). No API endpoint to mark
   alerts resolved.
 - **Batch cron runs at 02:00** local container time, which is UTC inside Docker.
-- `cassandra_vessel_positions_all.csv` is 20 MB of seed data committed to the repo
-  for convenience. It should be removed or git-ignored once a live stream has
-  accumulated sufficient history.
+
